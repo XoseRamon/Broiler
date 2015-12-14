@@ -14,7 +14,7 @@ from keras.layers.core import Dense, Dropout, Activation, Flatten
 from keras.layers.embeddings import Embedding
 from keras.layers.convolutional import Convolution1D, MaxPooling1D
 from keras.utils import np_utils
-#from pandas import DataFrame
+from pandas import DataFrame
 
 '''
     This example demonstrates the use of Convolution1D
@@ -35,7 +35,7 @@ hidden_dims = 150
 nb_epoch = 15
 
 print("Loading data...")
-(X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines = cooking.load_data(test_split=0.0)
+(X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines = cooking.load_data(train_path="../train.json", test_path="../test.json", test_split=0.0)
 print(len(X_train), 'train sequences')
 print(len(X_test), 'test sequences')
 max_features = len(vocab)
@@ -90,7 +90,7 @@ model.fit(X_train, Y_train, nb_epoch=nb_epoch, batch_size=batch_size, verbose=1,
 a = model.predict_classes(X_prediction)
 print("Number of predictions %d" % len(a))
 submision_complete = np.vstack([np.array(X_id), np.array(cuisines)[a]])
-#submision_prediction_df = DataFrame(np.transpose(submision_complete))
-#submision_prediction_df.to_csv(r'submision_final' + '.csv', header=False,
-                                  # index=False, sep=' ',
-                                   #mode='a')
+submision_prediction_df = DataFrame(np.transpose(submision_complete))
+submision_prediction_df.to_csv(r'submision_final' + '.csv', header=False,
+                                   index=False, sep=' ',
+                                   mode='a')

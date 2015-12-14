@@ -6,14 +6,14 @@ import numpy as np
 import random
 
 
-def load_data(test_split=0.0):
+def load_data(test_path='test.json', train_path='train.json', test_split=0.0):
     """
     Loads data and split into 10 folds.
     """
-    with open('./test.json') as test_file:
+    with open(test_path) as test_file:
         test_set = json.load(test_file)
 
-    with open('./train.json') as train_file:
+    with open(train_path) as train_file:
         train_set = json.load(train_file)
 
     ingredients_train = defaultdict(int)

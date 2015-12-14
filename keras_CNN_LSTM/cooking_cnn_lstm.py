@@ -50,7 +50,8 @@ Only 2 epochs are needed as the dataset is very small.
 '''
 
 print("Loading data...")
-(X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines = cooking.load_data(test_split=0.0)
+(X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines = cooking.load_data(train_path="../train.json",
+                                                                                                test_path="../test_json", test_split=0.0)
 print(len(X_train), 'train sequences')
 print(len(X_test), 'test sequences')
 max_features = len(vocab)
