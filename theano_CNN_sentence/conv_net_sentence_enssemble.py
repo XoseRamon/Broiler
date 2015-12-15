@@ -8,20 +8,16 @@ Much of the code is modified from
 - https://github.com/mdenil/dropout (for dropout)
 - https://groups.google.com/forum/#!topic/pylearn-dev/3QbKtCumAW4 (for Adadelta)
 """
-import cPickle
-import numpy as np
-from collections import defaultdict, OrderedDict
+import json
+import timeit
+import warnings
+from collections import OrderedDict
+from pandas import *
+import sys
 import theano
 import theano.tensor as T
-import re
-import warnings
-import sys
 import conv_net_classes as conv_classes
-import timeit
-from pprint import pprint
-from pandas import *
-import json
-import cooking_preprocess_clean
+import cooking
 
 warnings.filterwarnings("ignore")
 
@@ -67,9 +63,9 @@ def filter_set():
 
 
 def train_conv_net(datasets,
-                   cv,
                    submision,
                    U,
+                   name,
                    submision_complete,
                    img_w=300,
                    filter_hs=[3, 4, 5],
@@ -87,7 +83,7 @@ def train_conv_net(datasets,
     Train a simple conv net
     img_h = sentence length (padded where necessary)
     img_w = word vector length (300 for word2vec)
-    filter_hs = filter window sizes    
+    filter_hs = filter window sizes
     hidden_units = [x,y] x is the number of feature maps (per filter window), and y is the penultimate layer
     sqr_norm_lim = s^2 in the paper
     lr_decay = adadelta decay parameter
@@ -186,10 +182,12 @@ def train_conv_net(datasets,
         test_pred_layers.append(test_layer0_output.flatten(2))
     test_layer1_input = T.concatenate(test_pred_layers, 1)
     test_y_pred = classifier.predict(test_layer1_input)
+    test_y_pred_prob = classifier.predict_p(test_layer1_input)
     # hello_world_op = theano.printing.Print('hello world')
     # printed_test_y_pred = hello_world_op(test_y_pred)
     test_error = T.mean(T.neq(test_y_pred, y))
     get_predition = theano.function([x], test_y_pred, allow_input_downcast=True)
+    get_predition_prob = theano.function([x], test_y_pred_prob, allow_input_downcast=True)
     test_model_all = theano.function([x, y], test_error)
     ###confusion matrix
     x2 = T.vector('x')
@@ -211,6 +209,7 @@ def train_conv_net(datasets,
     val_perf = 0
     test_perf = 0
     cost_epoch = 0
+    remain = submision[1].shape[0] - test_set_x.shape[0]
     while epoch < n_epochs:
         start = timeit.default_timer()
         epoch += 1
@@ -234,40 +233,35 @@ def train_conv_net(datasets,
         if val_perf >= best_val_perf:
             best_val_perf = val_perf
             test_loss = test_model_all(test_set_x, test_set_y)
-            predictions = get_predition(test_set_x)
-            confusion_Matrix = DataFrame(confusion_matrix(predictions, test_set_y, 20))
-            confusion_Matrix.to_csv(r'confusion_matrix' + str(epoch) + '.csv',
-                                    index=True, sep=' ',
-                                    mode='a')
             test_perf = 1 - test_loss
+    # remain = 3
 
-    remain = submision[1].shape[0]
-    max_prediction_size = test_set_x.shape[0]
-    counter = 0
-    submision_prediction = []
-    if (remain> max_prediction_size):
-        while remain > 0:
-            if (remain>=max_prediction_size):
-                submision_prediction1 = get_predition(submision[0][counter:counter+max_prediction_size])
-                submision_prediction = np.concatenate((submision_prediction, submision_prediction1), axis=0)
-            else:
-                fill = np.zeros(((max_prediction_size-remain), test_set_x.shape[1]))
-                complete_vector = np.concatenate((submision[0][counter:counter+remain], fill), axis=0)
-                submision_prediction1 = get_predition(complete_vector)
-                submision_prediction = np.concatenate((submision_prediction, submision_prediction1[:remain]), axis=0)
-            counter+=max_prediction_size
-            remain-=max_prediction_size
+    if remain > 0:
+        submision_prediction1 = get_predition(submision[0][0:test_set_x.shape[0]])
+        submision_prediction2 = get_predition(submision[0][remain:test_set_x.shape[0] + remain])
+        submision_prediction = np.concatenate((submision_prediction1, submision_prediction2[-remain:]), axis=0)
+        # getting probs
+        submision_prediction1_prob = get_predition_prob(submision[0][0:test_set_x.shape[0]])
+        submision_prediction2_prob = get_predition_prob(submision[0][remain:test_set_x.shape[0] + remain])
+        submision_prediction_prob = np.concatenate((submision_prediction1_prob, submision_prediction2_prob[-remain:]),
+                                                   axis=0)
+
     else:
-        fill = np.zeros(((max_prediction_size-remain), test_set_x.shape[1]))
+        fill = np.zeros((-remain, test_set_x.shape[1]))
+        print fill.shape
         complete_vector = np.concatenate((submision[0], fill), axis=0)
         submision_prediction = get_predition(complete_vector)
         submision_prediction = submision_prediction[:submision[0].shape[0]]
+        # getting probs
+        submision_prediction_prob = get_predition_prob(complete_vector)
+        submision_prediction_prob = submision_prediction_prob[:submision[0].shape[0]]
+
     submision_complete = np.vstack([submision_complete, submision_prediction])
     submision_prediction_df = DataFrame(np.transpose(submision_complete))
-    submision_prediction_df.to_csv(r'submision_cv' + str(cv) + '.csv', header=False,
+    submision_prediction_df.to_csv(r'submision_cv_' + name + '.csv', header=False,
                                    index=False, sep=' ',
                                    mode='a')
-    return test_perf, submision_complete
+    return test_perf, submision_complete, submision_prediction, submision_prediction_prob
 
 
 def shared_dataset(data_xy, borrow=True):
@@ -342,7 +336,7 @@ def safe_update(dict_to, dict_from):
     return dict_to
 
 
-def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
+def pad_with_zeroes(sent, max_l=51, filter_h=5):
     """
     Transforms sentence into a list of indices. Pad with zeroes.
     """
@@ -350,110 +344,139 @@ def get_idx_from_sent(sent, word_idx_map, max_l=51, k=300, filter_h=5):
     pad = filter_h - 1
     for i in xrange(pad):
         x.append(0)
-    words = sent.split()
-    for word in words:
-        if word in word_idx_map:
-            x.append(word_idx_map[word])
+    for word in sent:
+        x.append(word)
     while len(x) < max_l + 2 * pad:
         x.append(0)
     return x
 
 
-def get_test_set(word_idx_map, max_l=51, filter_h=5):
-    with open('../test.json') as test_file:
-        test_set = json.load(test_file)
+def get_test_set(X_predict, X_id, max_l=51, filter_h=5):
     test_set_sub = []
-    test_set_sub_id = []
-    for item in test_set:
-        x = []
-        pad = filter_h - 1
-        for i in xrange(pad):
-            x.append(0)
-        for ingredient in item["ingredients"]:
-            if ingredient in word_idx_map:
-                x.append(word_idx_map[ingredient])
-        while len(x) < max_l + 2 * pad:
-            x.append(0)
-        test_set_sub_id.append(item["id"])
-        test_set_sub.append(x)
-    return [np.array(test_set_sub, dtype="int"), np.array(test_set_sub_id, dtype="int")]
+    for i in range(len(X_predict)):
+        sent = pad_with_zeroes(X_predict[i], max_l, filter_h)
+        test_set_sub.append(sent)
+
+    return [np.array(test_set_sub, dtype="int"), np.array(X_id, dtype="int")]
 
 
-def make_idx_data_cv(revs, word_idx_map, cv, max_l=51, k=300, filter_h=5):
+def get_W(word_vecs, k=300):
+    """
+    Get word matrix. W[i] is the vector for word indexed by i
+    """
+    vocab_size = len(word_vecs)
+    W = np.zeros(shape=(vocab_size + 1, k))
+    W[0] = np.zeros(k)
+    i = 1
+    for word in word_vecs:
+        W[i] = word_vecs[word]
+        i += 1
+    return W
+
+
+def make_idx_data_cv(X_train, y_train, X_test, y_test, max_l=51, k=300, filter_h=5):
     """
     Transforms sentences into a 2-d matrix.
     """
     train, test = [], []
-    for rev in revs:
-        sent = get_idx_from_sent(rev["recipe"], word_idx_map, max_l, k, filter_h)
-        sent.append(rev["y"])
-        if rev["split"] == cv:
-            test.append(sent)
-        else:
-            train.append(sent)
+    for i in range(len(y_train)):
+        sent = pad_with_zeroes(X_train[i], max_l, filter_h)
+        sent.append(y_train[i])
+        train.append(sent)
+
+    for i in range(len(y_test)):
+        sent = pad_with_zeroes(X_test[i], max_l, filter_h)
+        sent.append(y_test[i])
+        test.append(sent)
+
     train = np.array(train, dtype="int")
     test = np.array(test, dtype="int")
     return [train, test]
 
 
-if __name__ == "__main__":
-    mode = sys.argv[1]
-    word_vectors = sys.argv[2]
-    embed_dim = sys.argv[3]
-    minfreq = sys.argv[4]
-    epochs = sys.argv[5]
-    print('-' * 40)
-    print "loading data..."
-    data, W, W2, word_idx_map, vocab, cuisines = cooking_preprocess_clean.get_all_data(minfreq=int(minfreq),window=70, shuffle=1,embed_dim=int(embed_dim))
-    print "data loaded!"
-    if mode == "-nonstatic":
-        print "model architecture: CNN-non-static"
-        non_static = True
-    elif mode == "-static":
-        print "model architecture: CNN-static"
-        non_static = False
-    execfile("conv_net_classes.py")
-    if word_vectors == "-rand":
-        print "using: random vectors"
-        U = W2
-    elif word_vectors == "-word2vec":
-        print "using: word2vec vectors"
-        U = W
+def random_we(vocab, min_df=1, k=300):
+    """
+    For words that occur in at least min_df documents, create a separate word vector.
+    0.25 is chosen so the unknown vectors have (approximately) same variance as pre-trained ones
+    """
+    word_vecs = {}
+    for word in vocab:
+        if word not in word_vecs:  # and vocab[word] >= min_df:
+            word_vecs[word] = np.random.uniform(-0.25, 0.25, k)
+    return word_vecs
 
-    test_set_subm = get_test_set(word_idx_map, max_l=65, filter_h=5)
-    submision_complete = test_set_subm[1]
+
+def get_ensembler_predictions(shuffle=2, embed_dim=300, epochs=10, filter_hs=[3, 4, 5], hidden_units=100, name = "model"):
+    print('-' * 40 + name)
+    print("Loading data...")
+    (X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines = cooking.load_data(test_split=0.1,
+                                                                                                    shuffle=2)
+    print(len(X_train), 'train sequences')
+    print(len(X_test), 'test sequences')
+    print("Pad sequences (samples x time)")
+    nb_classes = np.max(y_train) + 1
+    print "data loaded!"
+    print('-' * 40)
+    rand_vecs = random_we(vocab, k=int(embed_dim))
+    U = get_W(rand_vecs, k=embed_dim)
+    execfile("conv_net_classes.py")
+    # filter = filter_set()
+    test_set_subm = get_test_set(X_prediction, X_id, max_l=65, filter_h=np.max(filter_hs))
     results = []
-    r = range(0, 10)
-    for i in r:
-        datasets = make_idx_data_cv(data, word_idx_map, i, max_l=65, k=int(embed_dim), filter_h=5)
-        perf = train_conv_net(datasets,
-                              i,
-                              test_set_subm,
-                              U,
-                              submision_complete,
-                              lr_decay=0.95,
-                              img_w=int(embed_dim),
-                              filter_hs=[3, 4, 5],
-                              conv_non_linear="relu",
-                              hidden_units=[100, 20],
-                              shuffle_batch=True,
-                              n_epochs=int(epochs),
-                              sqr_norm_lim=9,
-                              non_static=non_static,
-                              batch_size=50,
-                              dropout_rate=[0.5])
-        print "cv: " + str(i) + ", perf: " + str(perf[0])
-        results.append(perf[0])
-        submision_complete = perf[1]
-    trans = np.transpose(submision_complete[1:, :])
-    final_ensemble = []
-    for i in range(trans.shape[0]):
-        count = np.bincount(trans[i], minlength=20)
-        final_ensemble.append(np.argmax(count))
-    submision_complete = np.vstack([test_set_subm[1], np.array(cuisines)[final_ensemble]])
+    datasets = make_idx_data_cv(X_train, y_train, X_test, y_test, max_l=65, k=int(embed_dim),
+                                filter_h=np.max(filter_hs))
+    perf = train_conv_net(datasets,
+                          test_set_subm,
+                          U,
+                          name,
+                          np.array(X_id),
+                          lr_decay=0.95,
+                          img_w=int(embed_dim),
+                          filter_hs=filter_hs,
+                          conv_non_linear="relu",
+                          hidden_units=[hidden_units, nb_classes],
+                          shuffle_batch=True,
+                          n_epochs=int(epochs),
+                          sqr_norm_lim=9,
+                          non_static=True,
+                          batch_size=50,
+                          dropout_rate=[0.5])
+    print "cv: " + ", perf: " + str(perf[0])
+    print "probs shape"
+    print perf[3].shape
+    results.append(perf[0])
+    submision_complete = perf[1]
+    trans = np.transpose(submision_complete)[:, 1:]
+    # final_ensemble = []
+    # for i in range(submision_complete.shape[0]):
+    #     print trans[i]
+    #     count = np.bincount(trans[i], minlength=20)
+    #     final_ensemble.append(np.argmax(count))
+    # count = np.apply_along_axis(np.bincount, axis=1, arr=np.transpose(submision_complete)[:, 1:], minlength=20)
+    # final_ensemble = np.apply_along_axis(np.argmax, 1, count)
+    submision_complete = np.vstack([np.array(X_id), np.array(cuisines)[perf[2]]])
     submision_prediction_df = DataFrame(np.transpose(submision_complete))
-    submision_prediction_df.to_csv(r'submision_final' + '.csv', header=False,
+    submision_prediction_df.to_csv(r'submision_final_' + name +'.csv', header=False,
                                    index=False, sep=' ',
                                    mode='a')
     print str(np.mean(results))
-    print('-' * 40)
+    print('-' * 40 + name)
+    return perf[3], X_id, cuisines
+
+
+if __name__ == "__main__":
+    probs1, X_id, cuisines = get_ensembler_predictions(shuffle=2, embed_dim=100, epochs=2, filter_hs=[3, 4, 5], hidden_units=50, name = "model1")
+    probs2, _, _ = get_ensembler_predictions(shuffle=2, embed_dim=200, epochs=2, filter_hs=[3, 4, 5, 6], hidden_units=50, name = "model2")
+    ensemble_probs = np.mean([probs1,probs2], axis = 0)
+    df=[]
+    low_prob_number = 0
+    for i in range(len(X_id)):
+        if max(ensemble_probs[i])<0.7:
+            low_prob_number += 1
+            print "Warning id %d has low prob!!!" % X_id[i]
+        df.append([X_id[i],np.array(cuisines)[np.argmax(ensemble_probs[i])]])
+    print "Warning %d elements with low prob!!!" % low_prob_number
+    submision_prediction_df = DataFrame(df)
+    submision_prediction_df.to_csv(r'submision_final_ensembler.csv', header=False,
+                                   index=False, sep=' ',
+                                   mode='a')
