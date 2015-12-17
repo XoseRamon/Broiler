@@ -49,6 +49,40 @@ def load_data(test_split=0.0, shuffle=1):
     y_test = labels[int(len(X) * (1 - test_split)):]
     return (X_train, y_train), (X_test, y_test), (X_prediction, X_id), vocab, cuisines
 
+def load_full_data(shuffle=1):
+    with open('../test.json') as test_file:
+        test_set = json.load(test_file)
+
+    with open('../train.json') as train_file:
+        train_set = json.load(train_file)
+
+    ingredients_train = defaultdict(int)
+    cuisine_classes = defaultdict(int)
+    X = []
+    X_prediction = []
+    X_id = []
+    labels = []
+    for item in train_set:
+        cuisine_classes[item["cuisine"]] += 1
+        for ingredient in item["ingredients"]:
+            ingredients_train[ingredient.replace(" ", "_")] += 1
+
+    vocab = list(ingredients_train.keys())
+    cuisines = list(cuisine_classes.keys())
+    for item in train_set:
+        for i in range(shuffle):
+            random.shuffle(item["ingredients"])
+            X.append([vocab.index(ingredient.replace(" ", "_")) for ingredient in item["ingredients"]])
+            labels.append(cuisines.index(item["cuisine"]))
+
+    for item in test_set:
+        random.shuffle(item["ingredients"])
+        X_prediction.append([vocab.index(ingredient.replace(" ", "_")) for ingredient in item["ingredients"] if
+                             ingredient.replace(" ", "_") in vocab])
+        X_id.append(item["id"])
+
+    return (X, labels), (X_prediction, X_id), vocab, cuisines
+
 
 # def get_W(word_vecs, k=300):
 #     """
